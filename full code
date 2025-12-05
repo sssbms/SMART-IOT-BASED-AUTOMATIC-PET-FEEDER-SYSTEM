@@ -1,0 +1,172 @@
+include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <Servo.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+// Function prototypes
+void handleRoot();
+void handleSetFeedTimes();
+void checkFoodLevel();
+void dispenseFood();
+float getFoodLevel();
+void dispenseFoodAtTime(int currentHour, int currentMinute);
+// Define pins for components
+#define TRIG_PIN D7
+#define ECHO_PIN D6
+#define SERVO_PIN D3
+#define LED_PIN D8
+// Wi-Fi credentials
+const char* ssid = "Student_wifi";
+const char* password = "piupiupiu";
+// Feeding times (default values)
+int FEED_HOURS[] = {9, 13, 20};
+int FEED_MINUTE = 30;
+// Constants and variables
+const float CRITICAL_THRESHOLD_CM = 20.0;
+const float LOW_THRESHOLD_CM = 15.0;
+const int MAX_TUBE_HEIGHT_CM = 21;
+const int SERVO_OPEN_ANGLE = 90;
+const int SERVO_CLOSE_ANGLE = 0;
+Servo servo;
+bool foodDispensed = false;
+String notificationMessage = "Food is enough, pet is fine :)";
+// NTP Client setup
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);
+// Web server setup
+ESP8266WebServer server(80);
+void setup() {
+Serial.begin(115200);
+pinMode(TRIG_PIN, OUTPUT);
+pinMode(ECHO_PIN, INPUT);
+pinMode(LED_PIN, OUTPUT);
+servo.attach(SERVO_PIN);
+servo.write(SERVO_CLOSE_ANGLE);
+digitalWrite(LED_PIN, LOW);
+// Connect to Wi-Fi
+WiFi.begin(ssid, password);
+Serial.print("Connecting to Wi-Fi");
+while (WiFi.status() != WL_CONNECTED) {
+delay(500);
+Serial.print(".");
+}
+Serial.println("\nConnected to Wi-Fi");
+Serial.rintln("IP Address: " + WiFi.localIP().toString());
+timeClient.begin();
+// Web server routes
+server.on("/", handleRoot);
+server.on("/setFeedTimes", handleSetFeedTimes);
+server.begin();
+Serial.println("Web server started.");
+}
+void loop() {
+timeClient.update();
+int rawTime = timeClient.getEpochTime() + (8 * 3600); // Apply timezone offset
+for GMT+8
+int currentHour = (rawTime % 86400L) / 3600;
+int currentMinute = (rawTime % 3600) / 60;
+float foodLevelCm = getFoodLevel();
+Serial.print("Current Time: ");
+Serial.print(currentHour);
+Serial.print(":");
+Serial.println(currentMinute);
+Serial.print("Food Remaining: ");
+Serial.print(foodLevelCm);
+Serial.println(" cm");
+checkFoodLevel();
+dispenseFoodAtTime(currentHour, currentMinute);
+server.handleClient();
+}
+float getFoodLevel() {
+int retries = 3;
+float distanceCm = MAX_TUBE_HEIGHT_CM;
+for (int i = 0; i < retries; i++) {
+digitalWrite(TRIG_PIN, LOW);
+delayMicroseconds(5);
+digitalWrite(TRIG_PIN, HIGH);
+delayMicroseconds(10);
+digitalWrite(TRIG_PIN, LOW);
+long duration = pulseIn(ECHO_PIN, HIGH, 60000);
+if (duration > 0) {
+distanceCm = (duration * 0.0343) / 2;
+break; // Exit loop if a valid echo is received
+} else {
+Serial.println("Warning: No echo received, retrying...");
+}
+delay(100); // Brief pause before retry
+}
+// Clamp distance to avoid invalid readings
+if (distanceCm > MAX_TUBE_HEIGHT_CM || distanceCm <= 0) {
+Serial.println("Error: Invalid sensor reading.");
+return MAX_TUBE_HEIGHT_CM;
+}
+float foodLevelCm = MAX_TUBE_HEIGHT_CM - distanceCm;
+return (foodLevelCm < 0.0f) ? 0.0f : foodLevelCm; // Ensure food level is
+not negative
+}
+void dispenseFoodAtTime(int currentHour, int currentMinute) {
+for (int i = 0; i < sizeof(FEED_HOURS) / sizeof(FEED_HOURS[0]); i++) {
+if (currentHour == FEED_HOURS[i] && currentMinute == FEED_MINUTE &&
+!foodDispensed) {
+dispenseFood();
+foodDispensed = true;
+break;
+}
+}
+if (currentMinute != FEED_MINUTE) {
+foodDispensed = false;
+}
+}
+void dispenseFood() {
+Serial.println("Dispensing food...");
+servo.write(SERVO_OPEN_ANGLE);
+delay(5000);
+servo.write(SERVO_CLOSE_ANGLE);
+Serial.println("Food dispensed.");
+}
+void checkFoodLevel() {
+float foodLevelCm = getFoodLevel();
+if (foodLevelCm <= 14.99) { // Food is enough
+Serial.println("Food is enough, pet is fine :)");
+notificationMessage = "Food is enough, pet is fine :)";
+while (foodLevelCm <= 14.99) {
+digitalWrite(LED_PIN, HIGH);
+foodLevelCm = getFoodLevel(); // Refresh reading
+}
+} else {
+Serial.println("FOOD IS EMPTY, PET IS STARVING!");
+notificationMessage = "FOOD IS EMPTY, PET IS STARVING!";
+digitalWrite(LED_PIN, HIGH);
+delay(100); // Flicker red LED
+digitalWrite(LED_PIN, LOW);
+delay(100);
+foodLevelCm = getFoodLevel(); // Refresh reading
+}
+}
+void handleRoot() {
+String htmlPage = "<h1>Pet Feeder Status</h1>";
+htmlPage += "<p>Current Food Level: " + String(getFoodLevel()) + " cm</p>";
+htmlPage += "<p>Status: " + notificationMessage + "</p>";
+htmlPage += "<form action='/setFeedTimes' method='GET'>";
+htmlPage += "Set Feeding Times (comma separated, e.g., 9,13,20): ";
+htmlPage += "<input type='text' name='hours'>";
+htmlPage += "<input type='submit' value='Update'>";
+htmlPage += "</form>";
+server.send(200, "text/html", htmlPage);
+}
+void handleSetFeedTimes() {
+if (server.hasArg("hours")) {
+String hoursArg = server.arg("hours");
+int hourCount = 0;
+int parsedHours[3] = {0};
+for (int i = 0; i < hoursArg.length(); i++) {
+if (isdigit(hoursArg[i])) {
+int value = hoursArg[i] - '0';
+if (hourCount < 3) parsedHours[hourCount++] = value;
+}
+}
+for (int i = 0; i < 3; i++) {
+FEED_HOURS[i] = parsedHours[i];
+}
+}
+}
